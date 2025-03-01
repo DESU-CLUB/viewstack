@@ -1,0 +1,74 @@
+
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Model Search Graph</title>
+        <script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+        <script>
+            mermaid.initialize({ startOnLoad: true });
+        </script>
+        <style>
+            body {
+                font-family: Arial, sans-serif;
+                margin: 40px;
+                line-height: 1.6;
+            }
+            .mermaid {
+                display: flex;
+                justify-content: center;
+                margin: 30px 0;
+            }
+            h1, h2 {
+                color: #333;
+            }
+            .container {
+                max-width: 1200px;
+                margin: 0 auto;
+            }
+            .recommendation {
+                border: 1px solid #ddd;
+                padding: 15px;
+                border-radius: 5px;
+                background-color: #f9f9f9;
+                margin: 20px 0;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>Model Search Results</h1>
+            
+            <h2>Query</h2>
+            <p>I need models for image classification of fire hazards</p>
+            
+            <h2>Visualization</h2>
+            <div class="mermaid">
+%%{init: {'flowchart': {'curve': 'linear'}}}%%
+graph TD;
+    Start([Start]):::first
+    Analysis([Analysis]):::analysis
+    emotion_face_image_classification_v3([emotion_face_image_classification_v3]):::recommended
+    Start --> Analysis;
+    Analysis -->|recommends| emotion_face_image_classification_v3;
+    classDef first fill:#ffdfba,stroke:#ff9a00,color:black
+    classDef analysis fill:#bae1ff,stroke:#0077ff,color:black
+    classDef recommended fill:#baffc9,stroke:#00b050,color:black,stroke-width:2px
+    classDef model fill:#f2f0ff,stroke:#9c88ff,color:black
+
+            </div>
+            
+            <h2>Recommendation</h2>
+            <div class="recommendation">
+                <p><strong>Model:</strong> emotion_face_image_classification_v3</p>
+                <p><strong>URL:</strong> <a href="https://huggingface.co/RickyIG/emotion_face_image_classification_v3" target="_blank">https://huggingface.co/RickyIG/emotion_face_image_classification_v3</a></p>
+                <p><strong>Reason:</strong> Although the primary function of this model is face recognition, its documentation mentions no direct relation to detecting fire hazards.</p>
+            </div>
+            
+            <h2>Analysis</h2>
+            <p>**Summary of Models Found**<br><br>Based on the search results, we have identified two main categories of models:<br><br>*   **Text Classification**: These models aim to categorize text into predefined labels or classes (fire hazard vs. safe). Two models fall under this category:<br>    *   `emotion_face_image_classification_v3` - An emotion detection model used primarily for facial expression analysis.<br>    *   `rembert-sentiment-analysis-polarity-classification-kazakh` - Sentiment analysis model for Kazakh language.<br><br>**Most Relevant Models**<br><br>The following models appear to be more directly related to the user's query about identifying fire hazards through image classification:<br><br>*   `emotion_face_image_classification_v3`: Although the primary function of this model is face recognition, its documentation mentions no direct relation to detecting fire hazards.<br>*   `rembert-sentiment-analysis-polarity-classification-kazakh`: While this model appears to be specifically tailored for Kazakhstan, there might be some indirect relevance if we consider linguistic differences.<br><br>However, none of these models explicitly discuss fire hazards or image classifications. If you're looking for models focused solely on image classification to detect potential fire hazards, you could explore other options like:<br><br>*   **DistilBERT**: Fine-tuned for object detection tasks, which could include identifying objects associated with fires. However, since `emotion_face_image_classification_v3` does not focus on image classification, this option would require further investigation.<br>*   Other custom-made models, developed for similar purposes, that do address both image classification and safety concerns surrounding fires.<br><br>**Recommendations**<br><br>Considering your initial query focuses on fire hazard identification through images, here are a few additional suggestions for exploring alternative solutions:<br><br>*   Utilize specialized models that prioritize object detection and image classification aligned with your requirements.<br>*   Explore models specifically designed for visual risk assessment, focusing on distinguishing signs of fires using computer vision techniques.<br>*   Investigate research papers and studies published in reputable outlets discussing fire-related image processing challenges and available solutions.</p>
+            
+            <p><small>Generated on 2025-03-01 15:57:30</small></p>
+        </div>
+    </body>
+    </html>
+    
