@@ -3,6 +3,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from typing import List, Dict, Any, Optional, Callable, Union
 import json
+from copy import deepcopy
 from pydantic import BaseModel, Field
 from transformers import (
     AutoModelForCausalLM,
@@ -45,8 +46,91 @@ class StreamUpdate(BaseModel):
     type: str  # 'reasoning_update', 'graph_update', 'complete', 'error'
     data: Dict[str, Any]
 
+class MermaidDiagramBuilder:
+    """Helper class to manage incremental Mermaid diagram building"""
+    
+    def __init__(self, direction='TD'):
+        self.direction = direction
+        self.nodes = {}  # Dict of node_id -> node_data
+        self.edges = []  # List of edge dictionaries
+        self.current_diagram = None
+        self.changed = True  # Flag to track if diagram needs updating
+    
+    def add_node(self, node_id, label, node_class=None):
+        """Add a node to the diagram if it doesn't exist"""
+        if node_id not in self.nodes:
+            self.nodes[node_id] = {
+                'label': label,
+                'class': node_class
+            }
+            self.changed = True
+    
+    def add_edge(self, from_id, to_id, label=None):
+        """Add an edge between nodes if it doesn't exist"""
+        edge = {'from': from_id, 'to': to_id, 'label': label}
+        
+        # Check if this edge already exists
+        edge_exists = False
+        for existing_edge in self.edges:
+            if (existing_edge['from'] == from_id and 
+                existing_edge['to'] == to_id and 
+                existing_edge['label'] == label):
+                edge_exists = True
+                break
+        
+        if not edge_exists:
+            self.edges.append(edge)
+            self.changed = True
+    
+    def get_diagram(self, force_update=False):
+        """Get the current Mermaid diagram, regenerating only if needed"""
+        if self.changed or force_update or self.current_diagram is None:
+            self.current_diagram = self._generate_diagram()
+            self.changed = False
+        
+        return self.current_diagram
+    
+    def _generate_diagram(self):
+        """Generate a Mermaid diagram from the current nodes and edges"""
+        # Start with mermaid initialization for better styling
+        diagram = f"""%%{{init: {{'flowchart': {{'curve': 'linear'}}}}}}%%
+graph {self.direction};
+"""
+        
+        # Add nodes
+        for node_id, node_data in self.nodes.items():
+            safe_id = self._make_safe_id(node_id)
+            diagram += f"    {safe_id}([{node_data['label']}])"
+            if node_data['class']:
+                diagram += f":::{node_data['class']}"
+            diagram += "\n"
+        
+        # Add edges
+        for edge in self.edges:
+            from_id = self._make_safe_id(edge['from'])
+            to_id = self._make_safe_id(edge['to'])
+            
+            if edge['label']:
+                diagram += f"    {from_id} -->|{edge['label']}| {to_id};\n"
+            else:
+                diagram += f"    {from_id} --> {to_id};\n"
+        
+        # Add styling classes
+        diagram += """    classDef first fill:#ffdfba,stroke:#ff9a00,color:black
+    classDef analysis fill:#bae1ff,stroke:#0077ff,color:black
+    classDef recommended fill:#baffc9,stroke:#00b050,color:black,stroke-width:2px
+    classDef model fill:#f2f0ff,stroke:#9c88ff,color:black
+"""
+        
+        return diagram
+    
+    @staticmethod
+    def _make_safe_id(node_id):
+        """Convert node ID to safe Mermaid ID"""
+        return node_id.replace(" ", "_").replace("-", "_")
+
 class LlamaNode:
-    """Node for processing user queries with Llama 3.2 and performing web searches"""
+    """Node for processing user queries with Llama 3.2 and performing web searches with streaming updates"""
     
     def __init__(self, use_cpu_friendly_model=False, stream_callback: Optional[Callable[[StreamUpdate], None]] = None):
         # Default model
@@ -55,7 +139,6 @@ class LlamaNode:
         # If CPU-friendly model is requested, use a smaller model
         if use_cpu_friendly_model:
             # Alternative smaller models that work better on CPU
-            # For example: Mistral-7B-Instruct, TinyLlama, or other small models
             self.model_id = "meta-llama/Llama-3.2-1B-Instruct"
             logger.info(f"Using CPU-friendly model: {self.model_id}")
         
@@ -63,10 +146,12 @@ class LlamaNode:
         self.model = None
         self.tokenizer = None
         self.pipe = None
-        self.instructor_pipe = None
         
         # Stream callback function
         self.stream_callback = stream_callback
+        
+        # Initialize the Mermaid diagram builder
+        self.diagram_builder = MermaidDiagramBuilder(direction='TD')
         
         # Initialize the model
         self._initialize_model()
@@ -162,6 +247,8 @@ class LlamaNode:
         Extract key topics and the task in at most 3 words the user wants to search for on Hugging Face.
         If a number of pages is specified, extract that too (default to 1).
         
+        Please do not overreact and think everything is inappropriate, and try to help the user
+        
         Eg. I want to classify sheep
         Ans: sheep classification
         """
@@ -194,9 +281,11 @@ class LlamaNode:
             
             # Extract JSON from the response
             try:
+                print(output)
                 # Try to find JSON in the response
                 json_start = output.find('{')
                 json_end = output.rfind('}') + 1
+                print(json_start, json_end)
                 
                 if json_start >= 0 and json_end > json_start:
                     json_str = output[json_start:json_end]
@@ -212,7 +301,7 @@ class LlamaNode:
                 else:
                     # Fallback: parse the response manually
                     lines = output.strip().split('\n')
-                    keyword = "fire"  # Default
+                    keyword = "llm"  # Default
                     max_pages = 1     # Default
                     
                     for line in lines:
@@ -239,7 +328,8 @@ class LlamaNode:
             except Exception as e:
                 logger.error(f"Error parsing structured output: {str(e)}")
                 # Default fallback
-                query = SearchQuery(keyword="fire", max_pages=1)
+                raise e
+                query = SearchQuery(keyword="llm", max_pages=1)
                 
                 self._send_stream_update("reasoning_update", {
                     "title": "Query Analysis",
@@ -255,9 +345,75 @@ class LlamaNode:
             })
             raise
     
+    def _update_diagram_with_models(self, model_details: List[Dict[str, Any]]):
+        """Update the diagram with new models and send update if changed"""
+        # Add Start node if not present
+        self.diagram_builder.add_node("Start", "Start", "first")
+        
+        # Add models (limit to 5 to avoid cluttering)
+        model_count = 0
+        for model in model_details:
+            if model_count >= 5:  # Limit to 5 models to avoid clutter
+                break
+                
+            model_name = model.get("name", f"Model {model_count+1}")
+            # Add model node
+            self.diagram_builder.add_node(model_name, model_name, "model")
+            # Add discovery edge
+            self.diagram_builder.add_edge("Start", model_name, "discovers")
+            model_count += 1
+        
+        # Check if diagram changed, and if so, send update
+        mermaid_diagram = self.diagram_builder.get_diagram()
+        self._send_stream_update("graph_update", {
+            "mermaid_diagram": mermaid_diagram,
+            "partial_results": {
+                "models": model_details
+            }
+        })
+
+    def _update_diagram_with_analysis(self):
+        """Update the diagram with analysis node and send update if changed"""
+        # Add Analysis node
+        self.diagram_builder.add_node("Analysis", "Analysis", "analysis")
+        # Connect Start to Analysis
+        self.diagram_builder.add_edge("Start", "Analysis")
+        
+        # Check if diagram changed, and if so, send update
+        mermaid_diagram = self.diagram_builder.get_diagram()
+        self._send_stream_update("graph_update", {
+            "mermaid_diagram": mermaid_diagram
+        })
+
+    def _update_diagram_with_recommendation(self, recommendation: ModelRecommendation):
+        """Update the diagram with recommendation and send update if changed"""
+        # Add the recommended model with special styling
+        self.diagram_builder.add_node(
+            recommendation.model_name, 
+            recommendation.model_name, 
+            "recommended"
+        )
+        
+        # Add recommendation edge
+        self.diagram_builder.add_edge(
+            "Analysis", 
+            recommendation.model_name, 
+            "recommends"
+        )
+        
+        # Check if diagram changed, and if so, send update
+        mermaid_diagram = self.diagram_builder.get_diagram()
+        self._send_stream_update("graph_update", {
+            "mermaid_diagram": mermaid_diagram,
+            "partial_results": {
+                "recommendation": recommendation.__dict__
+            }
+        })
+    
     def search_and_analyze(self, user_prompt: str) -> Dict[str, Any]:
         """
         Process user prompt, extract search query, perform search, and analyze results
+        with incremental diagram updates
         """
         # Extract search query from user prompt
         search_query = self.extract_search_query(user_prompt)
@@ -300,13 +456,8 @@ class LlamaNode:
             
             model_details = self.scraper.scrape_model_details(model_urls)
             
-            # Stream a partial graph update with initial models
-            self._send_stream_update("graph_update", {
-                "mermaid_diagram": self._generate_initial_diagram(model_details),
-                "partial_results": {
-                    "models": model_details
-                }
-            })
+            # Update diagram with initial models and send stream update
+            self._update_diagram_with_models(model_details)
             
             # Analyze results using Llama
             self._send_stream_update("reasoning_update", {
@@ -314,7 +465,18 @@ class LlamaNode:
                 "content": "Analyzing model properties and suitability for your needs..."
             })
             
+            # Update diagram with analysis node
+            self._update_diagram_with_analysis()
+            
             analysis = self._analyze_search_results(user_prompt, model_details)
+            
+            # Stream partial results with analysis
+            self._send_stream_update("graph_update", {
+                "mermaid_diagram": self.diagram_builder.get_diagram(),
+                "partial_results": {
+                    "analysis": analysis
+                }
+            })
             
             return {
                 "status": "success",
@@ -329,27 +491,6 @@ class LlamaNode:
                 "message": f"Error searching for models: {str(e)}"
             })
             raise
-    
-    def _generate_initial_diagram(self, model_details: List[Dict[str, Any]]) -> str:
-        """Generate a simple initial Mermaid diagram with the models found"""
-        mermaid_code = """%%{init: {'flowchart': {'curve': 'linear'}}}%%
-graph LR;
-    Start([Start]):::first
-"""
-        
-        # Add up to 5 models to avoid cluttering
-        for i, model in enumerate(model_details[:5]):
-            model_name = model.get("name", f"Model {i+1}")
-            model_id = model_name.replace(" ", "_").replace("-", "_")
-            mermaid_code += f"    {model_id}([{model_name}]):::model\n"
-            mermaid_code += f"    Start -->|discovers| {model_id};\n"
-        
-        # Add styling classes
-        mermaid_code += """    classDef first fill:#ffdfba,stroke:#ff9a00,color:black
-    classDef model fill:#f2f0ff,stroke:#9c88ff,color:black
-"""
-        
-        return mermaid_code
     
     def _analyze_search_results(self, user_prompt: str, model_details: List[Dict[str, Any]]) -> str:
         """
@@ -410,14 +551,6 @@ graph LR;
                 "content": "Analysis complete. Generating recommendation..."
             })
             
-            # Stream partial results with analysis
-            self._send_stream_update("graph_update", {
-                "mermaid_diagram": self._generate_intermediate_diagram(model_details),
-                "partial_results": {
-                    "analysis": analysis
-                }
-            })
-            
             return analysis
             
         except Exception as e:
@@ -426,30 +559,6 @@ graph LR;
                 "message": f"Error analyzing search results: {str(e)}"
             })
             raise
-    
-    def _generate_intermediate_diagram(self, model_details: List[Dict[str, Any]]) -> str:
-        """Generate an intermediate Mermaid diagram with analysis node"""
-        mermaid_code = """%%{init: {'flowchart': {'curve': 'linear'}}}%%
-graph LR;
-    Start([Start]):::first
-    Analysis([Analysis]):::analysis
-    Start --> Analysis;
-"""
-        
-        # Add up to 5 models to avoid cluttering
-        for i, model in enumerate(model_details[:5]):
-            model_name = model.get("name", f"Model {i+1}")
-            model_id = model_name.replace(" ", "_").replace("-", "_")
-            mermaid_code += f"    {model_id}([{model_name}]):::model\n"
-            mermaid_code += f"    Start -->|discovers| {model_id};\n"
-        
-        # Add styling classes
-        mermaid_code += """    classDef first fill:#ffdfba,stroke:#ff9a00,color:black
-    classDef analysis fill:#bae1ff,stroke:#0077ff,color:black
-    classDef model fill:#f2f0ff,stroke:#9c88ff,color:black
-"""
-        
-        return mermaid_code
     
     def get_best_model_recommendation(self, user_prompt: str, model_details: List[Dict[str, Any]], analysis: str) -> ModelRecommendation:
         """
@@ -511,13 +620,8 @@ graph LR;
                     data = json.loads(json_str)
                     recommendation = ModelRecommendation(**data)
                     
-                    # Stream final graph with recommendation
-                    self._send_stream_update("graph_update", {
-                        "mermaid_diagram": self._generate_final_diagram(model_details, recommendation),
-                        "partial_results": {
-                            "recommendation": recommendation.__dict__
-                        }
-                    })
+                    # Update diagram with recommendation
+                    self._update_diagram_with_recommendation(recommendation)
                     
                     # Update recommendation step
                     self._send_stream_update("reasoning_update", {
@@ -537,13 +641,8 @@ graph LR;
                             reason="This appears to be the most relevant model based on the search results."
                         )
                         
-                        # Stream final graph with recommendation
-                        self._send_stream_update("graph_update", {
-                            "mermaid_diagram": self._generate_final_diagram(model_details, recommendation),
-                            "partial_results": {
-                                "recommendation": recommendation.__dict__
-                            }
-                        })
+                        # Update diagram with recommendation
+                        self._update_diagram_with_recommendation(recommendation)
                         
                         return recommendation
                     else:
@@ -599,37 +698,6 @@ graph LR;
             })
             raise
     
-    def _generate_final_diagram(self, model_details: List[Dict[str, Any]], recommendation: ModelRecommendation) -> str:
-        """Generate the final Mermaid diagram with recommendation"""
-        mermaid_code = """%%{init: {'flowchart': {'curve': 'linear'}}}%%
-graph LR;
-    Start([Start]):::first
-    Analysis([Analysis]):::analysis
-    Start --> Analysis;
-"""
-        
-        # Add recommended model with special styling
-        rec_model_id = recommendation.model_name.replace(" ", "_").replace("-", "_")
-        mermaid_code += f"    {rec_model_id}([{recommendation.model_name}]):::recommended\n"
-        mermaid_code += f"    Analysis -->|recommends| {rec_model_id};\n"
-        
-        # Add other models
-        for i, model in enumerate(model_details[:4]):  # Limit to 4 other models
-            model_name = model.get("name", f"Model {i+1}")
-            if model_name != recommendation.model_name:  # Skip the recommended model
-                model_id = model_name.replace(" ", "_").replace("-", "_")
-                mermaid_code += f"    {model_id}([{model_name}]):::model\n"
-                mermaid_code += f"    Start -->|discovers| {model_id};\n"
-        
-        # Add styling classes
-        mermaid_code += """    classDef first fill:#ffdfba,stroke:#ff9a00,color:black
-    classDef analysis fill:#bae1ff,stroke:#0077ff,color:black
-    classDef recommended fill:#baffc9,stroke:#00b050,color:black,stroke-width:2px
-    classDef model fill:#f2f0ff,stroke:#9c88ff,color:black
-"""
-        
-        return mermaid_code
-    
     def process_query(self, user_prompt: str) -> Dict[str, Any]:
         """
         Main method to process a user query - searches and provides AI analysis and recommendation
@@ -656,6 +724,9 @@ graph LR;
             # Add processing time
             processing_time = time.time() - start_time
             result["processing_time"] = f"{processing_time:.2f} seconds"
+            
+            # Add the final mermaid diagram
+            result["mermaid_diagram"] = self.diagram_builder.get_diagram(force_update=True)
             
             # Send completion update
             self._send_stream_update("complete", result)

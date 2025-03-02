@@ -20,6 +20,20 @@ from tqdm import tqdm
 from pprint import pprint
 import argparse
 import re
+import unicodedata
+import re
+
+def _sanitize_string(s: str) -> str:
+    if not s:
+        return ""
+    # 1) Normalize to NFD to split off accents/diacritics
+    s = unicodedata.normalize('NFD', s)
+    # 2) Remove anything outside [\x20-\x7E\n\r], i.e. normal ASCII printable + line breaks
+    #    Adjust the range to suit your needs (e.g., keep extended ASCII or certain symbols).
+    s = re.sub(r'[^\x20-\x7E\n\r]+', '', s)
+    # Trim and return
+    return s.strip()
+
 
 def contains_any_keyword(url: str, keywords: list) -> bool:
     """
@@ -78,7 +92,7 @@ class HuggingFaceScraper:
 
             
             try:
-                search_url = search_url = f"https://huggingface.co/models?sort=trending&search={keyword}&p={page}"
+                search_url = search_url = f"https://huggingface.co/models?search={keyword}&p={page}"
                 
                 # If we get an HTML response, we need to parse it using JigsawStack
                     # Use jigsawstack to extract model links from the search results page
@@ -116,34 +130,35 @@ class HuggingFaceScraper:
         print(f"Found {len(model_urls)} unique model URLs")
         return model_urls
     
-    def _extract_model_links(self, content: str,limit = 5) -> List[str]:
+    def _extract_model_links(self, content: dict, limit=5) -> dict:
         """
         Extract model links from scraped content
         """
         links = content['link']
         out = {}
         pattern = r"https://huggingface\.co/([^/]+)/([^/\s]+)"
-        for idx,link in enumerate(links):
+
+        for idx, link in enumerate(links):
             if len(out) == limit:
                 break
-            if contains_any_keyword(link['href'], ['blob','search'])  and re.match(pattern, link['href']):
-                out[link['text']] = link['href']
+            # If "href" doesn't contain unwanted keywords, 
+            # and it matches the huggingface model pattern
+            if contains_any_keyword(link['href'], ['blob','search']) and re.match(pattern, link['href']):
+                # Sanitize the link's "text" as the "model name"
+                safe_name = _sanitize_string(link['text'])
+                safe_href = _sanitize_string(link['href'])  # optional if you also want to sanitize URLs
+                out[safe_name] = safe_href
         print(out)
         return out
-            
+                
     
-    def scrape_model_details(self, model_urls: List[str]) -> List[Dict[str, Any]]:
-        """
-        Scrape details for each model URL using JigsawStack
-        """
+    def scrape_model_details(self, model_urls: dict) -> List[Dict[str, Any]]:
         model_details = []
-        
         print(f"Scraping details for {len(model_urls)} models...")
-        
-        for idx, model in enumerate(tqdm(model_urls)):
-            url = model_urls[model]
+
+        for idx, model_name in enumerate(tqdm(model_urls)):
+            url = model_urls[model_name]
             try:
-                # Use jigsawstack for more accurate extraction
                 scrape_params = {
                     "url": url,
                     "element_prompts": [
@@ -153,50 +168,52 @@ class HuggingFaceScraper:
                         "Extract model description"
                     ]
                 }
-                
                 result = self.jigsawstack.web.ai_scrape(scrape_params)
-                pprint(result)
+                
                 if result and isinstance(result, dict):
                     content = result.get('context', '')
-                    
-                    # Parse the content to extract structured information
-                    downloads = self._extract_info(content, "Extract the number of downloads", "0")
-                    likes = self._extract_info(content, "Extract the number of likes", "0")
-                    author = self._extract_info(content, "Extract the model author/organization", "")
-                    description = self._extract_info(content, "Extract model description", "")
-                    
-                    # Clean up numeric values
-                    downloads = self._clean_numeric(downloads)
-                    likes = self._clean_numeric(likes)
-                    
-                    # Add to results
+
+                    # Extract fields
+                    raw_downloads = self._extract_info(content, "Extract the number of downloads", "0")
+                    raw_likes = self._extract_info(content, "Extract the number of likes", "0")
+                    raw_author = self._extract_info(content, "Extract the model author/organization", "")
+                    raw_description = self._extract_info(content, "Extract model description", "")
+
+                    # Sanitize text fields
+                    author = _sanitize_string(raw_author)
+                    description = _sanitize_string(raw_description)
+                    # We also might want to re-sanitize the model_name from earlier
+                    safe_model_name = _sanitize_string(model_name)
+
+                    # Clean numeric values
+                    downloads = self._clean_numeric(raw_downloads)
+                    likes = self._clean_numeric(raw_likes)
+
+                    # Add to the results list
                     model_details.append({
-                        "name": model,
-                        "url": url,
+                        "name": safe_model_name,
+                        "url": url,  # or sanitize if you want
                         "author": author,
                         "downloads": downloads,
                         "likes": likes,
                         "description": description
                     })
-                
-                # Be respectful with rate limiting
-                time.sleep(1)
-                
+
+                time.sleep(1)  # rate-limiting
             except Exception as e:
                 print(f"Error scraping model {url}: {str(e)}")
-                # Add a placeholder entry to maintain the record
-                raise e
+                # fallback
                 model_details.append({
                     "url": url,
-                    "name": url.split('/')[-1],
+                    "name": model_name, 
                     "author": "",
                     "downloads": 0,
                     "likes": 0,
-                    "tags": "",
                     "description": f"Error: {str(e)}"
                 })
-        
+
         return model_details
+
     
     def _extract_info(self, content: str, info_type: str, default: str) -> str:
         """
@@ -241,7 +258,7 @@ def main():
         
         # Search for models
         max_pages = 1
-        keyword = "fire"
+        keyword = "water"
         model_urls = scraper.search_models(keyword, max_pages)
         print("\n\n\n\n\nDEBUG\n\n\n\n\n\n")
         print(model_urls)

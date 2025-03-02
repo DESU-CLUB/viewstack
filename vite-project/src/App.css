@@ -363,3 +363,33 @@ body {
     transform: translateX(calc(100% - var(--sidebar-collapsed-width)));
   }
 }
+
+.diagram-container {
+  width: 100%;
+  height: 500px;     /* or any fixed/relative height you want */
+  overflow: hidden;  /* hides content if the diagram is bigger than 500px tall */
+  position: relative;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background-color: white;
+
+  /* Use flex or block as needed */
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+/* The scale wrapper that shrinks the entire diagram */
+.diag-scale-wrap {
+  transform-origin: top left;  
+  transform: scale(0.8);  /* for example, 80% size */
+}
+
+/* Let the SVG fill the “normal” size 
+   before it’s visually scaled by .diag-scale-wrap */
+.mermaid-diagram svg {
+  width: 100% !important;
+  height: auto !important;
+  max-width: none !important;
+}
+

@@ -8,8 +8,8 @@ import logging
 import time
 import queue
 import threading
-from nodes import LlamaNode, StreamUpdate
 import torch
+from nodes import LlamaNode, StreamUpdate, MermaidDiagramBuilder
 
 # Configure logging
 logging.basicConfig(
@@ -32,8 +32,8 @@ CORS(app)  # Enable Cross-Origin Resource Sharing
 # Set up static folder for saved visualizations
 os.makedirs('static', exist_ok=True)
 
-# Initialize the LlamaNode globally
-llama_node = LlamaNode(use_cpu_friendly_model=not torch.cuda.is_available())
+# Initialize the global LlamaNode (used as a template)
+global_llama_node = LlamaNode(use_cpu_friendly_model=not torch.cuda.is_available())
 
 @app.route('/api/health', methods=['GET'])
 def health_check():
@@ -47,12 +47,6 @@ def health_check():
 def serve_static(filename):
     """Serve static files"""
     return send_from_directory('static', filename)
-
-def modify_mermaid_for_horizontal(mermaid_code):
-    """Modify mermaid code to use LR (Left to Right) direction"""
-    if "graph TD;" in mermaid_code:
-        return mermaid_code.replace("graph TD;", "graph LR;")
-    return mermaid_code
 
 @app.route('/api/search', methods=['POST'])
 def search():
@@ -80,18 +74,23 @@ def search():
         # Set up queue for stream updates
         update_queue = queue.Queue()
         
+        # Create a new LlamaNode instance with the specified direction
+        # This ensures we don't modify the global instance's diagram builder
+        search_llama_node = LlamaNode(
+            use_cpu_friendly_model=not torch.cuda.is_available(),
+            stream_callback=None  # We'll set this below
+        )
+        
+        # Initialize the diagram builder with the specified direction
+        search_llama_node.diagram_builder = MermaidDiagramBuilder(direction=direction)
+        
         # Define the stream callback function
         def stream_callback(update: StreamUpdate):
-            # If it's a graph update and direction is specified, modify the mermaid diagram
-            if update.type == "graph_update" and direction == 'LR':
-                if 'mermaid_diagram' in update.data:
-                    update.data['mermaid_diagram'] = modify_mermaid_for_horizontal(update.data['mermaid_diagram'])
-            
             # Put the update in the queue
             update_queue.put(update)
         
         # Set the stream callback on the llama node
-        llama_node.set_stream_callback(stream_callback)
+        search_llama_node.set_stream_callback(stream_callback)
         
         # Define a generator function for the streaming response
         def generate():
@@ -99,7 +98,7 @@ def search():
             def process_query():
                 try:
                     # Process the query - this will trigger stream updates via the callback
-                    llama_node.process_query(query)
+                    search_llama_node.process_query(query)
                     # Mark the end of the stream
                     update_queue.put(None)
                 except Exception as e:
@@ -173,6 +172,137 @@ def reasoning_steps():
         })
     except Exception as e:
         logger.error(f"Error getting reasoning steps: {str(e)}")
+        return jsonify({
+            "status": "error",
+            "message": str(e)
+        }), 500
+
+@app.route('/api/save-visualization', methods=['POST'])
+def save_visualization():
+    """
+    Save the search results and visualization as static files
+    
+    Expected JSON payload:
+    {
+        "query": "Search query text",
+        "mermaid_diagram": "Mermaid diagram code",
+        "recommendation": {...},  # Recommendation data
+        "analysis": "Analysis text"
+    }
+    """
+    try:
+        data = request.json
+        if not data or 'mermaid_diagram' not in data:
+            return jsonify({"error": "Missing required data"}), 400
+        
+        # Generate unique file names based on timestamp
+        timestamp = int(time.time())
+        md_filename = f"search_result_{timestamp}.md"
+        html_filename = f"search_result_{timestamp}.html"
+        
+        # Save Mermaid diagram
+        md_path = os.path.join('static', md_filename)
+        with open(md_path, "w") as f:
+            f.write("```mermaid\n")
+            f.write(data["mermaid_diagram"])
+            f.write("\n```")
+        
+        # Create HTML visualization
+        query = data.get('query', 'Unknown query')
+        recommendation = data.get('recommendation', {})
+        analysis = data.get('analysis', 'No analysis available')
+        
+        html_content = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Model Search Results</title>
+            <script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+            <script>
+                mermaid.initialize({{ 
+                    startOnLoad: true,
+                    flowchart: {{
+                        useMaxWidth: false,
+                        htmlLabels: true
+                    }}
+                }});
+            </script>
+            <style>
+                body {{
+                    font-family: Arial, sans-serif;
+                    margin: 40px;
+                    line-height: 1.6;
+                }}
+                .mermaid {{
+                    display: flex;
+                    justify-content: center;
+                    margin: 30px 0;
+                }}
+                h1, h2 {{
+                    color: #333;
+                }}
+                .container {{
+                    max-width: 1200px;
+                    margin: 0 auto;
+                }}
+                .recommendation {{
+                    border: 1px solid #ddd;
+                    padding: 15px;
+                    border-radius: 5px;
+                    background-color: #f9f9f9;
+                    margin: 20px 0;
+                }}
+                /* Make diagram fit horizontally */
+                .mermaid svg {{
+                    width: 100% !important;
+                    max-width: none !important;
+                    height: auto !important;
+                }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <h1>Model Search Results</h1>
+                
+                <h2>Query</h2>
+                <p>{query}</p>
+                
+                <h2>Visualization</h2>
+                <div class="mermaid">
+{data['mermaid_diagram']}
+                </div>
+                
+                <h2>Recommendation</h2>
+                <div class="recommendation">
+                    <p><strong>Model:</strong> {recommendation.get('model_name', 'N/A')}</p>
+                    <p><strong>URL:</strong> <a href="{recommendation.get('model_url', '#')}" target="_blank">{recommendation.get('model_url', 'N/A')}</a></p>
+                    <p><strong>Reason:</strong> {recommendation.get('reason', 'N/A')}</p>
+                </div>
+                
+                <h2>Analysis</h2>
+                <p>{analysis.replace(chr(10), '<br>')}</p>
+                
+                <p><small>Generated at {time.strftime('%Y-%m-%d %H:%M:%S')}</small></p>
+            </div>
+        </body>
+        </html>
+        """
+        
+        html_path = os.path.join('static', html_filename)
+        with open(html_path, "w") as f:
+            f.write(html_content)
+        
+        # Return file URLs
+        return jsonify({
+            "status": "success",
+            "visualization_urls": {
+                "markdown": f"/static/{md_filename}",
+                "html": f"/static/{html_filename}"
+            }
+        })
+        
+    except Exception as e:
+        logger.error(f"Error saving visualization: {str(e)}")
         return jsonify({
             "status": "error",
             "message": str(e)
